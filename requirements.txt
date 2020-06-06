@@ -1,4 +1,5 @@
 pandas==1.0.1
 plotly==4.6.0
+yahooquery==2.2.4
 numpy==1.18.1
 matplotlib==3.1.3

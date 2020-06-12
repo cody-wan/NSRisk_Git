@@ -7,11 +7,119 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from pandas.api.types import is_datetime64_any_dtype as is_datetime
 from datetime import date
+from yahooquery import Ticker
+from scipy.stats import ttest_ind
 
 
-# ---------------------- visualization utils ----------------------
+class Security(object):
 
-def plot_scatter(df, t0, t1, period_length=1, recession_periods=None):
+    def __init__(self, ticker):
+        self._ticker = ticker
+        self._t0 = None
+        self._t1 = None
+        self._df_hist = None
+        self._df_pct_change = None
+        self._df_risk = None
+
+    def set_df_hist(self, t0, t1, method='yahoo', interval='1d'):
+        t0=pd.to_datetime(t0)
+        t1=pd.to_datetime(t1)
+        self._t0 = t0
+        self._t1 = t1
+
+        if method == 'yahoo':
+            # uses yahooquery.Ticker to read yahoo finance data
+            self._df_hist = Ticker(self._ticker).history(start=self._t0, end=self._t1, interval=interval) # indexed from least recent to most
+            if interval=='1d':
+                self._df_hist.index = self._df_hist.index.normalize() # remove time portion of datetime for daily frequency
+
+    
+    def get_df_hist(self):
+        return self._df_hist
+
+    def set_df_pct_change(self, columns=['adjclose']):
+        self._df_pct_change = self._df_hist[columns].pct_change().dropna()
+    
+    def get_df_pct_change(self):
+        return self._df_pct_change
+
+    # compute historical VaR, ES, VaR to ES ratio
+    def set_df_risk(self, T, p, rolling_T=None):
+        """
+
+
+        """
+        if self._df_pct_change is None:
+            raise ValueError('percent change has not been computed')
+        
+        # initialize new dataframe for storing results
+        df = pd.DataFrame(columns=['start', 'end', 'VaR', 'ES', 'returns'])
+        # set variable types
+        df = df.astype({'VaR': 'float64', 'ES':'float64'})
+        # start: starting date, end: ending date of each period we will compute VaR/ES
+        df['start'] = self._df_pct_change.iloc[:-T].index
+        df['end'] = self._df_pct_change.iloc[T:].index
+
+        if rolling_T is None:
+            df = df[::-1][::T][::-1] # compute for each non-overlapping period
+        else:
+            df = df[::-1][::rolling_T][::-1]
+
+        # compute VaR and ES for each period given by a fixed time window; we move the window forward one unit/day at a time
+        for i, row in df.iterrows(): # iterate through each row of df_res
+            # subset percent changes in a given period
+            returns = self._df_pct_change.loc[row['start']:row['end']].iloc[:-1].values.flatten() # iloc[:-1] -> [start : end), i.e. left close, right open
+            df.at[i, 'returns'] = returns
+            # computes VaR (p^th-quantile)
+            returns_var = np.percentile(returns, q=p)
+            df.at[i, 'VaR'] = -returns_var
+            # compute ES
+            df.at[i, 'ES'] = -np.mean(returns[returns<returns_var])
+
+        self._df_risk = df
+    
+    def get_df_risk(self):
+        return self._df_risk
+    
+    def label_recession_df(self, peaks, troughs, df='risk'):
+        """
+            add a column on df that takes value of True(False), if [start, end) period crosses any recession period
+        """
+        if self._df_risk is None:
+            raise ValueError('risk has not been computed')
+
+        # classifies if a period crosses through a recession
+        classifier = lambda row, t0, t1 : ((row.start <= t0) & (t0 < row.end)) | ((t0 <= row.start) & (row.start < t1))
+        self._df_risk['recession'] = [any([ classifier(row, t0, t1) for t0, t1 in zip(peaks, troughs)]) for row in self._df_risk.itertuples()]
+    
+    def label_vol_level_df(self, T, df='risk'):
+        """
+            add a column on df that takes value of ''(''), based on annualized vol level
+        """
+        if self._df_risk is None:
+            raise ValueError('risk has not been computed')
+
+        self._df_risk['vol'] = self._df_risk['returns'].apply(lambda returns: returns.std()*np.sqrt(T))
+        vols = self._df_risk['vol'].values
+        cut_off = np.median(vols)
+        self._df_risk['vol level'] = np.where(self._df_risk['vol'] <= cut_off, 'low', 'high')
+
+
+
+
+# ---------------------- data importing ----------------------
+
+
+
+# ---------------------- data processing ----------------------
+
+
+
+
+# ----------------------- visualization -----------------------
+
+
+def plot_scatter(df, t0, t1, T=1, recession_periods=None):
     """
     shows an interactive scatter plot of VaR, ES, and ratio
 
@@ -22,32 +130,39 @@ def plot_scatter(df, t0, t1, period_length=1, recession_periods=None):
             VaR: numeric, VaR of the period from 'start' to 'end'
             ES: numeric, ES of the period from 'start' to 'end'
         
-        t0: pd.datetime, left bound of time series we will use
-        t1: pd.datetime, right bound of time series we will use
+        t0: 'YYYY-MM-DD', left bound of time series we will use, included
+        t1: 'YYYY-MM-DD', right bound of time series we will use, not included
             assuming time is ordered chronologically from left to right, and that t0, t1 as a bound applies only to 'start' date of df
 
-        period_length: int, we will use a (non-strict) subset by taking one row of df for every 'period_length'-many rows
+        T: int, we will use a (non-strict) subset by taking one row of df for every 'T'-many rows
                         default is 1, i.e. all rows of df are used
 
         recession_periods: pandas dataframe, if not provided, no recession periods will be highlighted in the plot,
             if provided, it comes with columns:
-            Peak: starting date of a recession period
-            Trough: ending date of a recession period
+            Peak: starting date of a recession period, included
+            Trough: ending date of a recession period, not included
             
     returns:
         None
 
     """
-    # select one row of df for 'period_length' many rows, and that whose start date is older than t0 and younger than t1
-    df = df[::-1][::period_length][::-1]
-    df = df[(df['start'] < t1) & (df['start'] > t0)]
+    # convert to datetime
+    t0 = pd.to_datetime(t0)
+    t1 = pd.to_datetime(t1)
+    # select one row of df for 'T' many rows, and that whose start date is older than t0 and younger than t1
+    df = df[::-1][::T][::-1]
+    df = df[(df['start'] < t1) & (df['start'] >= t0)]
 
     if isinstance(recession_periods, pd.DataFrame):
         # convert type to datetime if not already, and select values from recession_periods 
         # that would be needed given time horizon of df
         if not all([is_datetime(recession_periods[col]) for col in recession_periods.columns]):
             recession_periods = recession_periods.astype({'Peak':'datetime64', 'Trough':'datetime64'})
-        recession_periods = recession_periods.iloc[np.argmin(~(recession_periods.Trough > df.iloc[0].start)):] 
+        # only uses recession_periods that cross through data's overall time period
+        recession_periods = recession_periods.iloc[np.argmin(~(recession_periods['Trough'] > df.iloc[0]['start'])):
+                                                            np.argmax(~(recession_periods['Peak'] <= df.iloc[len(df)-1]['end']))] 
+
+
         # set up parameters for plotting historical recessions from 1930 to 2009 + covid19 recession
         peaks = recession_periods['Peak'].tolist()
         troughs = recession_periods['Trough'].tolist()
@@ -55,9 +170,10 @@ def plot_scatter(df, t0, t1, period_length=1, recession_periods=None):
         recession_shades = [dict(type="rect",xref="x",yref="paper",
                             x0=t0,y0=0, x1=t1, y1=1,
                             fillcolor="LightSalmon",opacity=0.4,layer="below",line_width=0) for t0, t1 in zip(peaks, troughs)]
-        recession_shades.append(dict(type="rect",xref="x",yref="paper",
-                                x0="2020-2-20",y0=0,x1=date.today(),y1=1, 
-                                fillcolor="LightSalmon",opacity=0.4,layer="below",line_width=0))
+        if t1 > pd.to_datetime('2020-2-20'):
+            recession_shades.append(dict(type="rect",xref="x",yref="paper",
+                                    x0="2020-2-20",y0=0,x1=date.today(),y1=1, 
+                                    fillcolor="LightSalmon",opacity=0.4,layer="below",line_width=0))
     else:
         recession_shades = None
 
@@ -70,7 +186,7 @@ def plot_scatter(df, t0, t1, period_length=1, recession_periods=None):
     fig.update_layout(
         hovermode='x unified', 
         autosize=False,
-        width=1000,
+        width=1100,
         height=450,
         margin=dict(l=20,r=20,b=20,t=20,pad=4),
         yaxis=dict(tickformat='.0%', rangemode = 'tozero'),
@@ -82,7 +198,7 @@ def plot_scatter(df, t0, t1, period_length=1, recession_periods=None):
     fig.show()
 
 
-def plot_time_series_histogram(df, t0, t1, period_length=252, recession_periods=None, date_format='%Y'):
+def plot_time_series_histogram(df, t0, t1, T=1, recession_periods=None, date_format='%Y'):
     """
     shows an interactive scatter plot of VaR, ES, and ratio
 
@@ -94,17 +210,17 @@ def plot_time_series_histogram(df, t0, t1, period_length=252, recession_periods=
             ES: numeric, ES of the period from 'start' to 'end'
             returns: list of numeric, list contains values in a given time period, used for making histogram
         
-        t0: pd.datetime, left bound of time series we will use
-        t1: pd.datetime, right bound of time series we will use
+        t0: 'YYYY-MM-DD', left bound of time series we will use, included
+        t1: 'YYYY-MM-DD', right bound of time series we will use, not included
             assuming time is ordered chronologically from left to right, and that t0, t1 as a bound applies only to 'start' date of df
 
-        period_length: int, we will use a (non-strict) subset by taking one row of df for every 'period_length'-many rows
-                        default is 1, i.e. all rows of df are used
+        T: int, we will use a (non-strict) subset by taking one row of df for every 'T'-many rows
+                usually, T should equal to the time horizon for which VaR, ES are computed for
 
         recession_periods: pandas dataframe, if not provided, no recession periods will be highlighted in the plot,
             if provided, it comes with columns:
-            Peak: starting date of a recession period
-            Trough: ending date of a recession period
+            Peak: starting date of a recession period, included
+            Trough: ending date of a recession period, not included
         
         date_format: string, contains datetime format for pd.datetime object, used as text display on 'datetime' axis
             
@@ -112,9 +228,12 @@ def plot_time_series_histogram(df, t0, t1, period_length=252, recession_periods=
         None
 
     """
-    # select one row of df for 'period_length'-many rows, and that whose start date is older than t0 and younger than t1
-    df = df[::-1][::period_length][::-1]
-    df = df[(df['start'] < t1) & (df['start'] > t0)]
+    # convert to datetime
+    t0 = pd.to_datetime(t0)
+    t1 = pd.to_datetime(t1)
+    # select one row of df for 'T'-many rows, and that whose start date is older than t0 and younger than t1
+    df = df[::-1][::T][::-1]
+    df = df[(df['start'] < t1) & (df['start'] >= t0)]
 
     recession_flag = False
     if isinstance(recession_periods, pd.DataFrame):

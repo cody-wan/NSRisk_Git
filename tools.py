@@ -6,5 +6,6 @@ import datetime
 import yahooquery
 
 
+
 if __name__ == '__main__':
     pass

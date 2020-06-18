@@ -13,6 +13,8 @@ from scipy.stats import ttest_ind
 
 class Security(object):
 
+    df = pd.read_csv('../data/VaR_add_data.csv').astype({'date':'datetime64'}).set_index('date')
+
     def __init__(self, ticker):
         self._ticker = ticker
         self._t0 = None
@@ -27,11 +29,21 @@ class Security(object):
         self._t0 = t0
         self._t1 = t1
 
-        if method == 'yahoo':
+        if self._ticker in ['XAU=', 'CLc1', 'LCOc1', 'GBP=', 'XLK', '.IXTTR', 'XLE', '.IXE', '.RUT']:
+            self._df_hist = self.read_from_local(self._ticker)
+        else:
             # uses yahooquery.Ticker to read yahoo finance data
             self._df_hist = Ticker(self._ticker).history(start=self._t0, end=self._t1, interval=interval) # indexed from least recent to most
-            if interval=='1d':
-                self._df_hist.index = self._df_hist.index.normalize() # remove time portion of datetime for daily frequency
+
+
+        if interval=='1d':
+            self._df_hist.index = self._df_hist.index.normalize() # remove time portion of datetime for daily frequency
+
+    def read_from_local(self, ticker):
+        
+        return (Security.df[ticker][Security.df[ticker] != 0].dropna()).to_frame()
+
+
 
     
     def get_df_hist(self):

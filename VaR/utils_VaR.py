@@ -29,28 +29,50 @@ class Security(object):
         self._t0 = t0
         self._t1 = t1
 
-        if self._ticker in ['XAU=', 'CLc1', 'LCOc1', 'GBP=', 'XLK', '.IXTTR', 'XLE', '.IXE', '.RUT']:
+        if self._ticker in ['XAU=', 'CLc1', 'LCOc1', 'GBP=', 'XLK', '.IXTTR', '.IXE', '.RUT']:
             self._df_hist = self.read_from_local(self._ticker)
         else:
             # uses yahooquery.Ticker to read yahoo finance data
-            self._df_hist = Ticker(self._ticker).history(start=self._t0, end=self._t1, interval=interval) # indexed from least recent to most
-
-
+            # indexed from least recent to most
+            self._df_hist = Ticker(self._ticker).history(start=self._t0, end=self._t1, interval=interval)['adjclose'] 
+        # set column name to be ticker
+        self._df_hist.columns = [self._ticker]
         if interval=='1d':
             self._df_hist.index = self._df_hist.index.normalize() # remove time portion of datetime for daily frequency
 
+
+    def set_df_hist_local(self, t0, t1, df):
+        """
+        set df_hist by function input
+        """
+        t0=pd.to_datetime(t0)
+        t1=pd.to_datetime(t1)
+        self._t0 = t0
+        self._t1 = t1
+        self._df_hist = df.copy(deep=True)
+        self._df_hist.columns = [self._ticker]
+
+
     def read_from_local(self, ticker):
-        
-        return (Security.df[ticker][Security.df[ticker] != 0].dropna()).to_frame()
-
-
+        return Security.df[ticker][Security.df[ticker] != 0].dropna()
 
     
     def get_df_hist(self):
         return self._df_hist
 
-    def set_df_pct_change(self, columns=['adjclose']):
-        self._df_pct_change = self._df_hist[columns].pct_change().dropna()
+    def set_df_pct_change(self):
+        self._df_pct_change = self._df_hist.pct_change().dropna()
+    
+    def set_df_pct_change_local(self, t0, t1, df):
+        """
+        set df_pct_change by function input
+        """
+        t0=pd.to_datetime(t0)
+        t1=pd.to_datetime(t1)
+        self._t0 = t0
+        self._t1 = t1
+        self._df_pct_change = df.copy(deep=True)
+        self._df_pct_change.columns = [self._ticker]
     
     def get_df_pct_change(self):
         return self._df_pct_change
@@ -131,7 +153,7 @@ class Security(object):
 # ----------------------- visualization -----------------------
 
 
-def plot_scatter(df, t0, t1, T=1, recession_periods=None):
+def plot_scatter(df, t0, t1, T=1, marked_periods=None):
     """
     shows an interactive scatter plot of VaR, ES, and ratio
 
@@ -149,14 +171,13 @@ def plot_scatter(df, t0, t1, T=1, recession_periods=None):
         T: int, we will use a (non-strict) subset by taking one row of df for every 'T'-many rows
                         default is 1, i.e. all rows of df are used
 
-        recession_periods: pandas dataframe, if not provided, no recession periods will be highlighted in the plot,
+        marked_periods: pandas dataframe, if not provided, no periods will be highlighted in the plot,
             if provided, it comes with columns:
-            Peak: starting date of a recession period, included
-            Trough: ending date of a recession period, not included
+            Peak: starting date of a marked period, included
+            Trough: ending date of a marked period, not included
             
     returns:
         None
-
     """
     # convert to datetime
     t0 = pd.to_datetime(t0)
@@ -165,19 +186,19 @@ def plot_scatter(df, t0, t1, T=1, recession_periods=None):
     df = df[::-1][::T][::-1]
     df = df[(df['start'] < t1) & (df['start'] >= t0)]
 
-    if isinstance(recession_periods, pd.DataFrame):
-        # convert type to datetime if not already, and select values from recession_periods 
+    if isinstance(marked_periods, pd.DataFrame):
+        # convert type to datetime if not already, and select values from marked_periods 
         # that would be needed given time horizon of df
-        if not all([is_datetime(recession_periods[col]) for col in recession_periods.columns]):
-            recession_periods = recession_periods.astype({'Peak':'datetime64', 'Trough':'datetime64'})
-        # only uses recession_periods that cross through data's overall time period
-        recession_periods = recession_periods.iloc[np.argmin(~(recession_periods['Trough'] > df.iloc[0]['start'])):
-                                                            np.argmax(~(recession_periods['Peak'] <= df.iloc[len(df)-1]['end']))] 
+        if not all([is_datetime(marked_periods[col]) for col in marked_periods.columns]):
+            marked_periods = marked_periods.astype({'Peak':'datetime64', 'Trough':'datetime64'})
+        # only uses marked_periods that cross through data's overall time period
+        if not all(pd.to_datetime(marked_periods['Peak']) <= pd.to_datetime(t1)): # if all marked periods within t0:t1, take all
+            marked_periods = marked_periods.iloc[np.argmin(~(marked_periods['Trough'] > t0)): np.argmax(~(marked_periods['Peak'] <= t1))] 
 
 
         # set up parameters for plotting historical recessions from 1930 to 2009 + covid19 recession
-        peaks = recession_periods['Peak'].tolist()
-        troughs = recession_periods['Trough'].tolist()
+        peaks = marked_periods['Peak'].tolist()
+        troughs = marked_periods['Trough'].tolist()
         
         recession_shades = [dict(type="rect",xref="x",yref="paper",
                             x0=t0,y0=0, x1=t1, y1=1,
@@ -201,8 +222,9 @@ def plot_scatter(df, t0, t1, T=1, recession_periods=None):
         width=1100,
         height=450,
         margin=dict(l=20,r=20,b=20,t=20,pad=4),
-        yaxis=dict(tickformat='.0%', rangemode = 'tozero'),
-        xaxis=dict(tickformat='%d %b %Y'),
+        yaxis=dict(tickformat='.0%', rangemode = 'tozero', showgrid=False),
+        yaxis2=dict(showgrid=False),
+        xaxis=dict(tickformat='%d %b %Y', showgrid=False),
         # all recession periods will be highlighted
         shapes = recession_shades,
         legend=dict(y=1.12)
@@ -210,7 +232,7 @@ def plot_scatter(df, t0, t1, T=1, recession_periods=None):
     fig.show()
 
 
-def plot_time_series_histogram(df, t0, t1, T=1, recession_periods=None, date_format='%Y'):
+def plot_time_series_histogram(df, t0, t1, T=1, marked_periods=None, date_format='%Y'):
     """
     shows an interactive scatter plot of VaR, ES, and ratio
 
@@ -229,10 +251,10 @@ def plot_time_series_histogram(df, t0, t1, T=1, recession_periods=None, date_for
         T: int, we will use a (non-strict) subset by taking one row of df for every 'T'-many rows
                 usually, T should equal to the time horizon for which VaR, ES are computed for
 
-        recession_periods: pandas dataframe, if not provided, no recession periods will be highlighted in the plot,
+        marked_periods: pandas dataframe, if not provided, no periods will be highlighted in the plot,
             if provided, it comes with columns:
-            Peak: starting date of a recession period, included
-            Trough: ending date of a recession period, not included
+            Peak: starting date of a marked period, included
+            Trough: ending date of a marked period, not included
         
         date_format: string, contains datetime format for pd.datetime object, used as text display on 'datetime' axis
             
@@ -248,15 +270,15 @@ def plot_time_series_histogram(df, t0, t1, T=1, recession_periods=None, date_for
     df = df[(df['start'] < t1) & (df['start'] >= t0)]
 
     recession_flag = False
-    if isinstance(recession_periods, pd.DataFrame):
-        # convert type to datetime if not already, and select values from recession_periods 
+    if isinstance(marked_periods, pd.DataFrame):
+        # convert type to datetime if not already, and select values from marked_periods 
         # that would be needed given time horizon of df
-        if not all([is_datetime(recession_periods[col]) for col in recession_periods.columns]):
-            recession_periods = recession_periods.astype({'Peak':'datetime64', 'Trough':'datetime64'})
-        recession_periods = recession_periods.iloc[np.argmin(~(recession_periods.Trough > df.iloc[0].start)):] 
+        if not all([is_datetime(marked_periods[col]) for col in marked_periods.columns]):
+            marked_periods = marked_periods.astype({'Peak':'datetime64', 'Trough':'datetime64'})
+        marked_periods = marked_periods.iloc[np.argmin(~(marked_periods.Trough > df.iloc[0].start)):] 
         # set up parameters for plotting historical recessions from 1930 to 2009 + covid19 recession
-        peaks = recession_periods['Peak'].tolist()
-        troughs = recession_periods['Trough'].tolist()
+        peaks = marked_periods['Peak'].tolist()
+        troughs = marked_periods['Trough'].tolist()
         recession_flag = True
 
     # plot time series of histogram of daily percent change

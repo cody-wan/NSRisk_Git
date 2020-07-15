@@ -202,19 +202,19 @@ def plot_scatter(df, t0, t1, T=1, marked_periods=None):
         
         recession_shades = [dict(type="rect",xref="x",yref="paper",
                             x0=t0,y0=0, x1=t1, y1=1,
-                            fillcolor="LightSalmon",opacity=0.4,layer="below",line_width=0) for t0, t1 in zip(peaks, troughs)]
+                            fillcolor="grey",opacity=0.4,layer="below",line_width=0) for t0, t1 in zip(peaks, troughs)]
         if t1 > pd.to_datetime('2020-2-20'):
             recession_shades.append(dict(type="rect",xref="x",yref="paper",
                                     x0="2020-2-20",y0=0,x1=date.today(),y1=1, 
-                                    fillcolor="LightSalmon",opacity=0.4,layer="below",line_width=0))
+                                    fillcolor="grey",opacity=0.4,layer="below",line_width=0))
     else:
         recession_shades = None
 
     # visualize value of historical realized VaR, ES and their ratio
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(name='VaR', x=df['start'], y=df['VaR'], hovertemplate=' %{y:.2%}'), secondary_y=False)
-    fig.add_trace(go.Scatter(name='ES', x=df['start'], y=df['ES'], hovertemplate=' %{y:.2%}'), secondary_y=False)
-    fig.add_trace(go.Scatter(name='VaR : ES', x=df['start'], y=df['VaR']/df['ES'], hovertemplate=' %{y:.2f}'), secondary_y=True)
+    # fig.add_trace(go.Scatter(name='VaR', x=df['start'], y=df['VaR'], hovertemplate=' %{y:.2%}'), secondary_y=False)
+    # fig.add_trace(go.Scatter(name='ES', x=df['start'], y=df['ES'], hovertemplate=' %{y:.2%}'), secondary_y=False)
+    fig.add_trace(go.Scatter(name='ES : VaR', x=df['start'], y=df['ES']/df['VaR'], hovertemplate=' %{y:.2f}', line=dict(color='blue')), secondary_y=True)
     fig.update_xaxes(rangeslider_visible=True)
     fig.update_layout(
         hovermode='x unified', 
@@ -225,6 +225,8 @@ def plot_scatter(df, t0, t1, T=1, marked_periods=None):
         yaxis=dict(tickformat='.0%', rangemode = 'tozero', showgrid=False),
         yaxis2=dict(showgrid=False),
         xaxis=dict(tickformat='%d %b %Y', showgrid=False),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
         # all recession periods will be highlighted
         shapes = recession_shades,
         legend=dict(y=1.12)
